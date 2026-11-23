@@ -361,10 +361,12 @@ function FireOrb({ p, active, anchorRef, fireScene, fireMat }: FireOrbProps) {
 
 function FireRing({
   p,
+  active,
   fireScene,
   fireMat,
 }: {
   p: FireRingParams;
+  active: boolean;
   fireScene: THREE.Scene;
   fireMat: THREE.ShaderMaterial;
 }) {
@@ -387,7 +389,8 @@ function FireRing({
     const u = fireMat.uniforms;
     u.uMode.value = 2;
     u.uTime.value = time.current;
-    u.uReveal.value = THREE.MathUtils.damp(u.uReveal.value, p.enabled ? 1 : 0, 0.8, dt);
+    const enabled = p.enabled && active;
+    u.uReveal.value = THREE.MathUtils.damp(u.uReveal.value, enabled ? 1 : 0, 0.8, dt);
     u.uCenter.value.copy(center);
     u.uBounds.value.copy(bounds);
     u.uScale.value = 0.9;
@@ -412,7 +415,7 @@ function FireRing({
       boxRef.current.position.copy(center);
       boxRef.current.scale.copy(bounds);
     }
-    const glow = p.enabled ? 1.35 * p.intensity * u.uReveal.value : 0;
+    const glow = enabled ? 1.35 * p.intensity * u.uReveal.value : 0;
     for (const light of [frontLightRef.current, leftLightRef.current, rightLightRef.current]) {
       if (light) {
         light.intensity = glow;
@@ -772,12 +775,14 @@ function CameraFlight({ focusOnEyes, eyeAnchorRef }: { focusOnEyes: boolean; eye
 function World({
   p,
   ring,
+  ringActive,
   modelUrl,
   active,
   focusOnEyes,
 }: {
   p: FireOrbParams;
   ring: FireRingParams;
+  ringActive: boolean;
   modelUrl?: string;
   active: boolean;
   focusOnEyes: boolean;
@@ -835,7 +840,7 @@ function World({
         fireScene={fireScene}
         fireMat={fireMat}
       />
-      <FireRing p={ring} fireScene={fireScene} fireMat={ringMat} />
+      <FireRing p={ring} active={ringActive} fireScene={fireScene} fireMat={ringMat} />
       <PostFX
         fireScene={fireScene}
         fireMats={fireMats}
@@ -860,6 +865,7 @@ export interface FireOrbSceneProps {
   /** стартові значення параметрів (читаються при першому рендері) */
   params?: Partial<FireOrbParams>;
   active?: boolean;
+  ringActive?: boolean;
   focusOnEyes?: boolean;
 }
 
@@ -869,13 +875,11 @@ export default function FireOrbScene({
   className,
   params: override,
   active = false,
+  ringActive = true,
   focusOnEyes = false,
 }: FireOrbSceneProps) {
   const d: FireOrbParams = {
     ...DEFAULT_PARAMS,
-    radius: 0.12,
-    flameHeight: 0.85,
-    offsetY: modelUrl ? 0.08 : DEFAULT_PARAMS.offsetY,
     ...override,
   };
 
@@ -1023,6 +1027,7 @@ export default function FireOrbScene({
           active={active}
           focusOnEyes={focusOnEyes}
           ring={ring}
+          ringActive={ringActive}
         />
       </Canvas>
     </div>

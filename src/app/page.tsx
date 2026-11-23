@@ -11,12 +11,19 @@ const FireOrbScene = dynamic(
 
 export default function Home() {
   const [awakened, setAwakened] = useState(true);
+  const [ringAwake, setRingAwake] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [focusOnEyes, setFocusOnEyes] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMenuVisible(true), 5000);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const ignitionDelay = 1800 + Math.random() * 3200;
+    const timer = window.setTimeout(() => setRingAwake(true), ignitionDelay);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -32,8 +39,8 @@ export default function Home() {
           modelUrl={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/models/demon.glb`}
           debug={controlsOpen}
           active={awakened}
+          ringActive={ringAwake}
           focusOnEyes={focusOnEyes}
-          params={{ radius: 0.12, flameHeight: 0.85 }}
         />
       </div>
 
