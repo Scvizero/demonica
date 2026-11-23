@@ -36,7 +36,7 @@ export default function Home() {
         aria-label="Інтерактивна 3D-сцена з персонажем і вогнем"
       >
         <FireOrbScene
-          modelUrl={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/models/demon.glb`}
+          modelUrl={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/models/143.glb`}
           debug={controlsOpen}
           active={awakened}
           ringActive={ringAwake}
