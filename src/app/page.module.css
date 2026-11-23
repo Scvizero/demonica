@@ -1,0 +1,149 @@
+.experience {
+  --paper: #eee9df;
+  --ember: #f36a38;
+  --hairline: rgba(238, 233, 223, 0.16);
+  position: relative;
+  width: 100%;
+  height: 100svh;
+  min-height: 420px;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--paper);
+  background: #080706;
+}
+
+.scene {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+}
+.scene canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.header {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 5.2vw;
+  right: 5.2vw;
+  height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--hairline);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-10px);
+  transition:
+    opacity 0.8s ease,
+    transform 0.8s ease,
+    visibility 0.8s;
+}
+.headerVisible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--paper);
+  text-decoration: none;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.07em;
+}
+.mark {
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(238, 233, 223, 0.55);
+  border-radius: 50%;
+  font:
+    italic 17px Georgia,
+    serif;
+  letter-spacing: -0.12em;
+  padding-right: 2px;
+}
+.dot {
+  color: var(--ember);
+}
+.navigation {
+  display: flex;
+  align-items: center;
+  gap: clamp(24px, 4vw, 58px);
+}
+.navigation a,
+.navigation button {
+  border: 0;
+  padding: 12px 0;
+  background: transparent;
+  color: #d7d0c6;
+  text-decoration: none;
+  font:
+    9px/1 var(--font-geist-mono),
+    monospace;
+  letter-spacing: 0.11em;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.navigation a:hover,
+.navigation button:hover {
+  color: var(--ember);
+}
+.navigation span {
+  padding-left: 6px;
+  color: var(--ember);
+}
+.contactReveal {
+  position: absolute;
+  z-index: 2;
+  right: 8vw;
+  bottom: 11vh;
+  display: inline-flex;
+  align-items: center;
+  gap: 26px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(238, 233, 223, 0.38);
+  color: var(--paper);
+  text-decoration: none;
+  font: 9px/1 var(--font-geist-mono), monospace;
+  letter-spacing: 0.12em;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px);
+  transition: opacity 0.7s ease, transform 0.7s ease, visibility 0.7s;
+}
+.contactRevealVisible { opacity: 1; visibility: visible; transform: translateY(0); }
+.contactReveal span { color: var(--ember); }
+
+@media (max-width: 600px) {
+  .header {
+    left: 22px;
+    right: 22px;
+    height: 68px;
+  }
+  .wordmark {
+    font-size: 17px;
+  }
+  .navigation {
+    gap: 17px;
+  }
+  .navigation a,
+  .navigation button {
+    font-size: 8px;
+    letter-spacing: 0.07em;
+  }
+  .contactReveal { right: 22px; bottom: 9vh; font-size: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header {
+    transition: none;
+  }
+}

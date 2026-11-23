@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вогняна куля</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #030202; overflow: hidden; }
+  canvas { display: block; }
+  #hint { position: fixed; left: 12px; bottom: 10px; right: 12px; color: #8a7a6a; font: 12px/1.4 system-ui, sans-serif; pointer-events: none; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/+esm"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">ЛКМ — обертання · колесо — масштаб · ПКМ — зсув · Перетягніть сюди свою модель .glb — куля стане їй у праву руку</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
+import { Pass } from 'three/addons/postprocessing/Pass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import GUI from 'lil-gui';
+
+/* ------------------------------------------------------------------ */
+/*  Налаштування                                                       */
+/* ------------------------------------------------------------------ */
+const PALETTES = {
+  'пекельний (як на фото)': [[0.28, 0.00, 0.00], [0.75, 0.05, 0.02], [1.00, 0.36, 0.04], [1.00, 0.72, 0.25]],
+  'класичний помаранчевий': [[0.35, 0.05, 0.00], [0.90, 0.25, 0.02], [1.00, 0.60, 0.10], [1.00, 0.93, 0.60]],
+  'демонічний фіолетовий':  [[0.15, 0.00, 0.20], [0.50, 0.05, 0.70], [0.85, 0.30, 1.00], [1.00, 0.85, 1.00]],
+  'синій':                  [[0.00, 0.03, 0.25], [0.05, 0.25, 0.90], [0.30, 0.65, 1.00], [0.85, 0.95, 1.00]],
+  'зелений':                [[0.00, 0.15, 0.02], [0.10, 0.60, 0.05], [0.50, 1.00, 0.20], [0.90, 1.00, 0.70]],
+};
+const LIGHT_COLORS = {
+  'пекельний (як на фото)': 0xff4a14,
+  'класичний помаранчевий': 0xff7a22,
+  'демонічний фіолетовий': 0x9a3cff,
+  'синій': 0x3a7bff,
+  'зелений': 0x5cff3a,
+};
+
+const params = {
+  palette: 'пекельний (як на фото)',
+  radius: 0.17,        // радіус кулі, м
+  offsetY: 0.22,       // висота центру кулі над точкою-якорем (долонею)
+  intensity: 1.0,
+  turbulence: 0.7,
+  flameHeight: 1.0,    // наскільки далеко язики виходять за кулю
+  sharpness: 3.5,      // різкість тонких ниток
+  core: 0.12,          // слабке свічення всередині
+  speed: 1.0,
+  bloom: 0.85,
+  exposure: 1.0,
+  light: 1.0,
+  sparks: true,
+};
+
+/* ------------------------------------------------------------------ */
+/*  Рендерер, сцена, камера                                            */
+/* ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();          // непрозорий світ (персонаж, земля, іскри)
+scene.background = new THREE.Color(0x030202);
+scene.fog = new THREE.FogExp2(0x030202, 0.16);
+
+const fireScene = new THREE.Scene();      // тільки об'ємна куля — малюється окремим проходом
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 60);
+camera.position.set(0.95, 1.5, 2.0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.40, 1.30, 0.56);
+controls.enableDamping = true;
+controls.minDistance = 0.7;
+controls.maxDistance = 8;
+controls.maxPolarAngle = Math.PI * 0.55;
+controls.update();
+
+/* ------------------------------------------------------------------ */
+/*  Render target сцени з depth-текстурою (щоб рука перекривала вогонь) */
+/* ------------------------------------------------------------------ */
+function makeSceneRT() {
+  const v = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const depthTexture = new THREE.DepthTexture(v.x, v.y);
+  return new THREE.WebGLRenderTarget(v.x, v.y, { type: THREE.HalfFloatType, depthTexture });
+}
+let sceneRT = makeSceneRT();
+
+/* ------------------------------------------------------------------ */
+/*  Об'ємна вогняна куля (raymarching порожньої оболонки)              */
+/* ------------------------------------------------------------------ */
+const fireVert = /* glsl */`
+  varying vec3 vWorld;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+
+const fireFrag = /* glsl */`
+  precision highp float;
+  #include <packing>
+
+  uniform float uTime;
+  uniform vec3  uCenter;     // центр кулі (світ)
+  uniform float uScale;      // радіус кулі (світ)
+  uniform float uIntensity;
+  uniform float uTurb;
+  uniform float uFlame;
+  uniform float uSharp;
+  uniform float uCore;
+  uniform vec3  uC1;
+  uniform vec3  uC2;
+  uniform vec3  uC3;
+  uniform vec3  uC4;
+  uniform sampler2D uDepth;
+  uniform vec2  uRes;
+  uniform vec3  uCamForward;
+  uniform float uNear;
+  uniform float uFar;
+  varying vec3  vWorld;
+
+  float hash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float noise(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(mix(hash(i),               hash(i + vec3(1,0,0)), f.x),
+          mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+      mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+          mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y),
+      f.z);
+  }
+  float fbm4(vec3 p) {
+    float v = 0.0; float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * noise(p);
+      p = p * 2.03 + vec3(1.7, 9.2, 3.1);
+      a *= 0.5;
+    }
+    return v;
+  }
+  float fbm3(vec3 p) {
+    float v = 0.0; float a = 0.5;
+    for (int i = 0; i < 3; i++) {
+      v += a * noise(p);
+      p = p * 2.03 + vec3(4.3, 1.1, 6.7);
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  vec3 fireColor(float I) {
+    vec3 c = mix(vec3(0.0), uC1, smoothstep(0.04, 0.30, I));
+    c = mix(c, uC2, smoothstep(0.25, 0.55, I));
+    c = mix(c, uC3, smoothstep(0.50, 0.85, I));
+    c = mix(c, uC4, smoothstep(0.85, 1.30, I));
+    return c;
+  }
+
+  // pl — точка у локальних координатах кулі (радіус кулі = 1, вісь Y — вгору)
+  // x = щільність, y = температура
+  vec2 field(vec3 pl) {
+    float r0 = length(pl);
+    if (r0 > 2.6 || r0 < 0.8) return vec2(0.0);
+    float t = uTime;
+
+    vec3 dir = pl / max(r0, 1e-4);
+    float up = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);   // 0 — низ кулі, 1 — верх
+
+    // domain warping, стадія 1: великі повільні завихрення, що біжать угору
+    vec3 flow = vec3(0.0, -t * 1.5, 0.0);
+    vec3 w1 = vec3(noise(pl * 1.2 + flow),
+                   noise(pl * 1.2 + flow + vec3(5.2, 1.3, 7.7)),
+                   noise(pl * 1.2 + flow + vec3(2.1, 9.4, 3.3))) - 0.5;
+    vec3 q = pl + w1 * uTurb * (0.4 + 1.0 * up);
+
+    // стадія 2: дрібні завитки — дають «волокнисту» структуру, як на стіні вогню
+    vec3 flow2 = vec3(0.0, -t * 2.2, 0.0);
+    vec3 w2 = vec3(noise(q * 3.0 + flow2 + vec3(1.7, 9.2, 3.1)),
+                   noise(q * 3.0 + flow2 + vec3(8.3, 2.8, 5.5)),
+                   noise(q * 3.0 + flow2 + vec3(4.4, 6.1, 0.9))) - 0.5;
+    q += w2 * uTurb * 0.35;
+
+    // маска язиків: повільний високий шум вирішує, де полум'я тягнеться далеко
+    float mask = fbm3(vec3(q.x * 1.5, q.y * 0.55 - t * 1.3, q.z * 1.5));
+    float tongue = smoothstep(0.38, 0.72, mask);
+
+    // відстань від поверхні та довжина язика (різна для кожного, угорі більша)
+    float s = length(q) - 1.0;
+    float T = (0.10 + 0.22 * up + 0.55 * tongue * (0.5 + 0.8 * up)) * uFlame;
+    float x = s / T;
+    float inner = smoothstep(-0.10, 0.03, s);                 // всередині порожньо
+    float shape = inner * (1.0 - smoothstep(0.0, 1.0, x));    // 1 на поверхні → 0 на краю
+
+    // вертикально витягнутий шум розрізає язики на окремі пасма
+    float n = fbm4(vec3(q.x * 2.4, q.y * 1.2 - t * 2.8, q.z * 2.4));
+    float d = clamp(shape * 1.4 - n * (0.25 + 0.95 * clamp(x, 0.0, 1.0)), 0.0, 1.0);
+
+    // тонкі яскраві нитки (ridged noise)
+    float rid = 1.0 - abs(2.0 * fbm3(vec3(q.x * 3.4, q.y * 1.6 - t * 3.6, q.z * 3.4)) - 1.0);
+    rid = pow(rid, uSharp);
+    float tend = rid * smoothstep(0.0, 0.5, shape) * (0.6 + 0.8 * tongue);
+
+    float dens = pow(d, 1.25) * 0.85 + tend * 0.8 * shape;
+
+    // температура падає від поверхні до кінчиків: жовтий низ → червоне тіло → темно-червоні кінці
+    float xc = clamp(x, 0.0, 1.0);
+    float temp = clamp(pow(1.0 - xc, 1.3) * 0.95 + d * 0.25 + tend * 0.15, 0.0, 1.3);
+    return vec2(dens, temp);
+  }
+
+  void main() {
+    vec3 ro = cameraPosition;
+    vec3 rd = normalize(vWorld - ro);
+
+    // перетин променя зі сферою радіусом 2 * uScale
+    vec3 oc = ro - uCenter;
+    float R2 = uScale * 2.6;
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - R2 * R2;
+    float disc = b * b - c;
+    if (disc <= 0.0) discard;
+    float sq = sqrt(disc);
+    float tn = max(-b - sq, 0.0);
+    float tf = -b + sq;
+    if (tf <= 0.0) discard;
+
+    // глибина непрозорої сцени: вогонь не малюється за персонажем
+    vec2 suv = gl_FragCoord.xy / uRes;
+    float dep = texture2D(uDepth, suv).x;
+    float viewZ = perspectiveDepthToViewZ(dep, uNear, uFar);
+    float ts = -viewZ / max(dot(rd, uCamForward), 1e-3);
+    tf = min(tf, ts);
+    if (tf <= tn) discard;
+
+    const int STEPS = 52;
+    float dt = (tf - tn) / float(STEPS);
+    float dl = dt / uScale;
+    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float t = tn + dt * jit;
+
+    vec3 col = vec3(0.0);
+    for (int i = 0; i < STEPS; i++) {
+      vec3 pl = (ro + rd * t - uCenter) / uScale;
+      float r0 = length(pl);
+      if (r0 < 1.0) col += uC1 * uCore * dl * (1.0 - r0);   // слабке світіння всередині
+      vec2 f = field(pl);
+      if (f.x > 0.002) col += fireColor(f.y) * f.x * dl * 5.0 * uIntensity;
+      t += dt;
+    }
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+const fireMat = new THREE.ShaderMaterial({
+  vertexShader: fireVert,
+  fragmentShader: fireFrag,
+  uniforms: {
+    uTime: { value: 0 },
+    uCenter: { value: new THREE.Vector3() },
+    uScale: { value: params.radius },
+    uIntensity: { value: params.intensity },
+    uTurb: { value: params.turbulence },
+    uFlame: { value: params.flameHeight },
+    uSharp: { value: params.sharpness },
+    uCore: { value: params.core },
+    uC1: { value: new THREE.Vector3() },
+    uC2: { value: new THREE.Vector3() },
+    uC3: { value: new THREE.Vector3() },
+    uC4: { value: new THREE.Vector3() },
+    uDepth: { value: sceneRT.depthTexture },
+    uRes: { value: new THREE.Vector2() },
+    uCamForward: { value: new THREE.Vector3() },
+    uNear: { value: camera.near },
+    uFar: { value: camera.far },
+  },
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthTest: false,
+  depthWrite: false,
+  side: THREE.BackSide,   // працює і коли камера всередині бокса
+});
+const fireBox = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), fireMat);
+fireBox.frustumCulled = false;
+fireScene.add(fireBox);
+
+const _c = new THREE.Color();
+function setPalette(name) {
+  const p = PALETTES[name];
+  const set = (u, rgb) => { _c.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace); u.value.set(_c.r, _c.g, _c.b); };
+  set(fireMat.uniforms.uC1, p[0]);
+  set(fireMat.uniforms.uC2, p[1]);
+  set(fireMat.uniforms.uC3, p[2]);
+  set(fireMat.uniforms.uC4, p[3]);
+  fireLight.color.setHex(LIGHT_COLORS[name]);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Іскри (GPU-частинки, у звичайній сцені — перекриваються глибиною)  */
+/* ------------------------------------------------------------------ */
+const pxScale = { value: 1 };
+const sparkMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPx: pxScale,
+    uScale: { value: params.radius },
+    uCenter: { value: new THREE.Vector3() },
+  },
+  vertexShader: /* glsl */`
+    attribute vec4 aSeed;
+    uniform float uTime;
+    uniform float uPx;
+    uniform float uScale;
+    uniform vec3  uCenter;
+    varying float vLife;
+    void main() {
+      float speed = 0.12 + 0.20 * aSeed.x;
+      float life = fract(uTime * speed + aSeed.y);
+      float th = aSeed.z * 6.2831853;
+      float ph = acos(1.0 - 1.6 * aSeed.w);            // зміщено до верхньої півкулі
+      vec3 dir = vec3(sin(ph) * cos(th), cos(ph), sin(ph) * sin(th));
+      vec3 p = dir * 1.02;
+      p.y += life * (1.0 + 2.4 * aSeed.x);
+      p.xz += dir.xz * life * 0.6
+            + vec2(sin(life * 8.0 + aSeed.z * 30.0), cos(life * 7.0 + aSeed.w * 25.0)) * 0.25 * life;
+      vLife = life;
+      vec4 mv = viewMatrix * vec4(uCenter + p * uScale, 1.0);
+      gl_PointSize = uScale * (0.075 + 0.08 * aSeed.x) * uPx / -mv.z * (1.0 - life * 0.7);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying float vLife;
+    void main() {
+      float d = length(gl_PointCoord - 0.5);
+      float a = smoothstep(0.5, 0.0, d);
+      a *= a;
+      vec3 col = mix(vec3(1.0, 0.70, 0.25), vec3(1.0, 0.16, 0.02), vLife);
+      gl_FragColor = vec4(col * 2.8, a * (1.0 - vLife));
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  depthTest: true,
+});
+{
+  const n = 90;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  const seed = new Float32Array(n * 4);
+  for (let i = 0; i < seed.length; i++) seed[i] = Math.random();
+  g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4));
+  var sparks = new THREE.Points(g, sparkMat);
+  sparks.frustumCulled = false;
+  scene.add(sparks);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Світло                                                             */
+/* ------------------------------------------------------------------ */
+const fireLight = new THREE.PointLight(0xff4a14, 2.2, 12, 2);
+fireLight.castShadow = true;
+fireLight.shadow.mapSize.set(1024, 1024);
+fireLight.shadow.camera.near = 0.05;
+fireLight.shadow.camera.far = 12;
+fireLight.shadow.bias = -0.002;
+fireLight.shadow.radius = 4;
+scene.add(fireLight);
+
+// холодний контровий, щоб силует персонажа читався
+const rim = new THREE.DirectionalLight(0x3a4a80, 0.35);
+rim.position.set(-2, 3, -3);
+scene.add(rim);
+scene.add(new THREE.HemisphereLight(0x161c30, 0x050302, 0.12));
+
+/* ------------------------------------------------------------------ */
+/*  Земля                                                              */
+/* ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 64),
+  new THREE.MeshStandardMaterial({ color: 0x15100d, roughness: 0.95 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ */
+/*  Персонаж-заглушка (демонічний маг із піднятою рукою)               */
+/* ------------------------------------------------------------------ */
+const clothMat = new THREE.MeshStandardMaterial({ color: 0x1a1412, roughness: 0.9 });
+const skinMat = new THREE.MeshStandardMaterial({ color: 0x4a2119, roughness: 0.7 });
+const hornMat = new THREE.MeshStandardMaterial({ color: 0x241a16, roughness: 0.5 });
+const eyeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color().setRGB(3.0, 1.1, 0.25) });
+
+function cast(m) { m.castShadow = true; m.receiveShadow = true; return m; }
+function limb(a, b, r, mat) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(len - 2 * r, 0.001), 6, 14), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return cast(m);
+}
+
+const hero = new THREE.Group();
+// роба
+const robe = cast(new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.5, 1.4, 28), clothMat));
+robe.position.set(0, 0.7, 0);
+hero.add(robe);
+// плечі
+const shoulders = cast(new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 16), clothMat));
+shoulders.scale.set(1.2, 0.55, 0.75);
+shoulders.position.set(0, 1.4, 0);
+hero.add(shoulders);
+// голова: обличчя + каптур
+const face = cast(new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 16), skinMat));
+face.position.set(0, 1.62, 0.02);
+hero.add(face);
+const hood = cast(new THREE.Mesh(new THREE.SphereGeometry(0.215, 24, 18), clothMat));
+hood.scale.set(1, 1.08, 1.02);
+hood.position.set(0, 1.65, -0.045);
+hero.add(hood);
+// очі, що світяться
+for (const sx of [-1, 1]) {
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.014, 10, 8), eyeMat);
+  eye.position.set(sx * 0.05, 1.63, 0.165);
+  hero.add(eye);
+}
+// роги
+for (const sx of [-1, 1]) {
+  const horn = cast(new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.3, 10), hornMat));
+  horn.position.set(sx * 0.11, 1.84, -0.02);
+  horn.rotation.z = -sx * 0.35;
+  horn.rotation.x = -0.18;
+  hero.add(horn);
+}
+// друга рука (опущена)
+hero.add(limb(new THREE.Vector3(-0.33, 1.42, 0.0), new THREE.Vector3(-0.42, 0.95, 0.06), 0.065, clothMat));
+const lowHand = cast(new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 10), skinMat));
+lowHand.position.set(-0.43, 0.9, 0.07);
+hero.add(lowHand);
+
+// піднята рука з відкритою долонею
+const armGroup = new THREE.Group();
+hero.add(armGroup);
+const S = new THREE.Vector3(0.33, 1.42, 0.0);
+const E = new THREE.Vector3(0.50, 1.13, 0.18);
+const W = new THREE.Vector3(0.40, 1.07, 0.47);
+const P = new THREE.Vector3(0.40, 1.065, 0.55);
+armGroup.add(limb(S, E, 0.07, clothMat));
+armGroup.add(limb(E, W, 0.062, clothMat));
+const palm = cast(new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), skinMat));
+palm.scale.set(1.0, 0.35, 1.2);
+palm.position.copy(P);
+armGroup.add(palm);
+for (let i = 0; i < 4; i++) {
+  const f = cast(new THREE.Mesh(new THREE.CapsuleGeometry(0.0095, 0.045, 4, 8), skinMat));
+  f.position.set(P.x + (i - 1.5) * 0.022, P.y + 0.02, P.z + 0.075);
+  f.rotation.x = 0.75 + (i === 1 || i === 2 ? 0.1 : 0.0);
+  armGroup.add(f);
+}
+const thumb = cast(new THREE.Mesh(new THREE.CapsuleGeometry(0.011, 0.04, 4, 8), skinMat));
+thumb.position.set(P.x - 0.05, P.y + 0.015, P.z + 0.02);
+thumb.rotation.set(0.5, 0, 0.95);
+armGroup.add(thumb);
+
+// якір, за яким рухається куля
+const handAnchor = new THREE.Object3D();
+handAnchor.position.copy(P);
+armGroup.add(handAnchor);
+scene.add(hero);
+
+let anchor = handAnchor;
+let mixer = null;
+
+/* ------------------------------------------------------------------ */
+/*  Власна модель: перетягнути .glb на сторінку                        */
+/* ------------------------------------------------------------------ */
+const hint = document.getElementById('hint');
+addEventListener('dragover', (e) => e.preventDefault());
+addEventListener('drop', (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  new GLTFLoader().load(url, (gltf) => {
+    scene.remove(hero);
+    const model = gltf.scene;
+    scene.add(model);
+
+    // нормалізація: висота 1.8 м, ноги на землі, по центру
+    const box = new THREE.Box3().setFromObject(model);
+    const h = box.getSize(new THREE.Vector3()).y || 1;
+    model.scale.multiplyScalar(1.8 / h);
+    box.setFromObject(model);
+    model.position.x -= (box.min.x + box.max.x) / 2;
+    model.position.z -= (box.min.z + box.max.z) / 2;
+    model.position.y -= box.min.y;
+    model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    model.updateMatrixWorld(true);
+
+    // пошук кістки правої кисті
+    let hand = null;
+    const patterns = [/righthand$/i, /handr$/i, /rhand$/i, /hand$/i];
+    for (const re of patterns) {
+      model.traverse((o) => {
+        if (!hand && o.isBone && re.test(o.name.replace(/[^a-z]/gi, ''))) hand = o;
+      });
+      if (hand) break;
+    }
+    if (hand) {
+      anchor = hand;
+      params.offsetY = 0.14;
+      hint.textContent = 'Модель завантажено, куля прив\u2019язана до кістки: ' + hand.name + '. Висоту кулі над долонею можна підкрутити в панелі.';
+    } else {
+      anchor = new THREE.Object3D();
+      anchor.position.set(0.4, 1.0, 0.5);
+      scene.add(anchor);
+      hint.textContent = 'Модель завантажено, але кістку кисті не знайдено — куля стоїть у фіксованій точці. Підкрутіть offsetY.';
+    }
+    if (gltf.animations && gltf.animations.length) {
+      mixer = new THREE.AnimationMixer(model);
+      mixer.clipAction(gltf.animations[0]).play();
+    }
+    gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    controls.target.copy(model.position).setY(1.3);
+  }, undefined, (err) => {
+    hint.textContent = 'Не вдалося завантажити модель (потрібен .glb): ' + (err.message || err);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Постобробка: [сцена] → [вогонь поверх] → bloom → tone mapping      */
+/* ------------------------------------------------------------------ */
+class FirePass extends Pass {
+  constructor(fscene, cam) {
+    super();
+    this.fscene = fscene;
+    this.cam = cam;
+    this.needsSwap = false;
+  }
+  render(renderer, writeBuffer, readBuffer) {
+    const oldAuto = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.setRenderTarget(readBuffer);
+    renderer.render(this.fscene, this.cam);
+    renderer.autoClear = oldAuto;
+  }
+}
+
+const composer = new EffectComposer(renderer);
+const texturePass = new TexturePass(sceneRT.texture);
+composer.addPass(texturePass);
+composer.addPass(new FirePass(fireScene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), params.bloom, 0.7, 0.3);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+function layout() {
+  renderer.setSize(innerWidth, innerHeight);
+  const v = renderer.getDrawingBufferSize(new THREE.Vector2());
+  composer.setPixelRatio(1);
+  composer.setSize(v.x, v.y);
+  sceneRT.dispose();
+  sceneRT.depthTexture.dispose();
+  sceneRT = makeSceneRT();
+  texturePass.map = sceneRT.texture;
+  fireMat.uniforms.uDepth.value = sceneRT.depthTexture;
+  fireMat.uniforms.uRes.value.set(v.x, v.y);
+  pxScale.value = v.y / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+}
+layout();
+setPalette(params.palette);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  layout();
+});
+
+/* ------------------------------------------------------------------ */
+/*  GUI                                                                */
+/* ------------------------------------------------------------------ */
+const gui = new GUI({ title: 'Вогняна куля' });
+gui.add(params, 'palette', Object.keys(PALETTES)).name('палітра').onChange(setPalette);
+gui.add(params, 'radius', 0.06, 0.5, 0.005).name('радіус кулі');
+gui.add(params, 'offsetY', -0.2, 0.6, 0.005).name('висота над долонею');
+gui.add(params, 'intensity', 0.3, 3.0, 0.01).name('яскравість');
+gui.add(params, 'turbulence', 0.0, 1.4, 0.01).name('завихрення');
+gui.add(params, 'flameHeight', 0.3, 2.0, 0.01).name('довжина язиків');
+gui.add(params, 'sharpness', 1.0, 8.0, 0.01).name('різкість ниток');
+gui.add(params, 'core', 0.0, 0.6, 0.01).name('свічення всередині');
+gui.add(params, 'speed', 0.2, 2.5, 0.01).name('швидкість');
+gui.add(params, 'bloom', 0.0, 2.0, 0.01).name('bloom');
+gui.add(params, 'exposure', 0.4, 2.0, 0.01).name('експозиція');
+gui.add(params, 'light', 0.0, 3.0, 0.01).name('світло на персонажі');
+gui.add(params, 'sparks').name('іскри');
+
+/* ------------------------------------------------------------------ */
+/*  Цикл                                                               */
+/* ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+let simTime = 0;
+const tmp = new THREE.Vector3();
+const center = new THREE.Vector3();
+const fwd = new THREE.Vector3();
+
+function flicker(t) {
+  return 0.82
+    + 0.14 * Math.sin(t * 9.1)
+    + 0.10 * Math.sin(t * 17.3 + 1.7)
+    + 0.08 * Math.sin(t * 31.7 + 4.1)
+    + 0.05 * Math.sin(t * 53.0);
+}
+
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  simTime += dt * params.speed;
+
+  // ледь помітне «дихання» руки заглушки
+  armGroup.position.y = Math.sin(simTime * 1.3) * 0.012;
+  if (mixer) mixer.update(dt);
+
+  // позиція кулі
+  anchor.getWorldPosition(center);
+  center.y += params.offsetY;
+  const bob = Math.sin(simTime * 2.1) * 0.004;
+  center.y += bob;
+
+  const u = fireMat.uniforms;
+  u.uTime.value = simTime;
+  u.uCenter.value.copy(center);
+  u.uScale.value = params.radius;
+  u.uIntensity.value = params.intensity;
+  u.uTurb.value = params.turbulence;
+  u.uFlame.value = params.flameHeight;
+  u.uSharp.value = params.sharpness;
+  u.uCore.value = params.core;
+  camera.getWorldDirection(fwd);
+  u.uCamForward.value.copy(fwd);
+
+  // бокс, що охоплює кулю з язиками (півсторона 2.65 радіуса)
+  fireBox.position.copy(center);
+  fireBox.scale.setScalar(params.radius * 2.65);
+
+  sparkMat.uniforms.uTime.value = simTime;
+  sparkMat.uniforms.uCenter.value.copy(center);
+  sparkMat.uniforms.uScale.value = params.radius;
+  sparks.visible = params.sparks;
+
+  const f = flicker(simTime);
+  fireLight.position.copy(center);
+  fireLight.position.x += Math.sin(simTime * 3.1) * 0.012;
+  fireLight.position.z += Math.cos(simTime * 2.7) * 0.012;
+  fireLight.intensity = 2.2 * params.light * f * params.intensity;
+
+  bloom.strength = params.bloom;
+  renderer.toneMappingExposure = params.exposure;
+
+  controls.update();
+
+  // 1) непрозорий світ у RT (з depth)
+  renderer.setRenderTarget(sceneRT);
+  renderer.clear();
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  // 2) вогонь поверх, bloom, tone mapping
+  composer.render(dt);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
