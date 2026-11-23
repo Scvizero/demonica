@@ -21,6 +21,7 @@ export const fireFrag = /* glsl */ `
   uniform float uScale;      // радіус кулі (світ)
   uniform float uMode;       // 0 — куля, 1 — стіна вогню
   uniform vec3  uBounds;     // піврозміри об'єму стіни у світових координатах
+  uniform float uRingRadius; // радіус кільця у нормалізованих координатах
   uniform float uIntensity;
   uniform float uTurb;
   uniform float uFlame;
@@ -151,6 +152,31 @@ export const fireFrag = /* glsl */ `
     return vec2(density, heat);
   }
 
+  // Об'ємна вогняна смуга, що огинає персонажа по колу.
+  vec2 ringField(vec3 p) {
+    float h = clamp(p.y * 0.5 + 0.5, 0.0, 1.0);
+    float angle = atan(p.z, p.x);
+    float slow = fbm3(vec3(cos(angle) * 2.6, -uTime * 0.35, sin(angle) * 2.6));
+    float flow = fbm4(vec3(cos(angle) * 3.8, h * 2.8 - uTime * 1.9, sin(angle) * 3.8));
+    float cut = fbm3(vec3(cos(angle) * 5.5 + 2.0, h * 4.0 - uTime * 2.7, sin(angle) * 5.5));
+    float ridge = pow(
+      1.0 - abs(2.0 * fbm3(vec3(cos(angle) * 6.5, h * 3.2 - uTime * 3.4, sin(angle) * 6.5)) - 1.0),
+      uSharp
+    );
+
+    float tongues = smoothstep(0.38, 0.76, cut);
+    float flameTop = clamp((0.2 + slow * 0.18 + tongues * 0.56) * uFlame, 0.16, 1.0);
+    float topMask = 1.0 - smoothstep(flameTop - 0.08, flameTop + 0.1, h);
+    float baseMask = smoothstep(0.0, 0.055, h);
+    float wanderingRadius = uRingRadius + (slow - 0.5) * 0.025 + h * 0.012;
+    float ringMask = 1.0 - smoothstep(0.025, 0.12, abs(length(p.xz) - wanderingRadius));
+    float strands = clamp(0.28 + flow * 1.3 - cut * 0.42, 0.0, 1.0);
+    float density = ringMask * topMask * baseMask * strands;
+    density += ringMask * topMask * baseMask * ridge * 0.22;
+    float heat = clamp((1.0 - h) * 0.88 + density * 0.32 + ridge * 0.08, 0.0, 1.3);
+    return vec2(density, heat);
+  }
+
   void main() {
     vec3 ro = cameraPosition;
     vec3 rd = normalize(vWorld - ro);
@@ -198,7 +224,7 @@ export const fireFrag = /* glsl */ `
       vec3 pl = uMode < 0.5 ? local / uScale : local / uBounds;
       float r0 = length(pl);
       if (uMode < 0.5 && r0 < 1.0) col += uC1 * uCore * dl * (1.0 - r0);   // слабке світіння всередині кулі
-      vec2 f = uMode < 0.5 ? field(pl) : wallField(pl);
+      vec2 f = uMode < 0.5 ? field(pl) : (uMode < 1.5 ? wallField(pl) : ringField(pl));
       if (f.x > 0.002) col += fireColor(f.y) * f.x * dl * 5.0 * uIntensity;
       t += dt;
     }

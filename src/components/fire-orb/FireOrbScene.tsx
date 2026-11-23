@@ -14,8 +14,8 @@ import { Pass } from "three/examples/jsm/postprocessing/Pass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
-import { DEFAULT_PARAMS, DEFAULT_WALL_PARAMS, LIGHT_COLORS, PALETTES } from "./palettes";
-import type { FireOrbParams, FireWallParams } from "./palettes";
+import { DEFAULT_PARAMS, DEFAULT_RING_PARAMS, LIGHT_COLORS, PALETTES } from "./palettes";
+import type { FireOrbParams, FireRingParams } from "./palettes";
 import { fireFrag, fireVert, sparkFrag, sparkVert } from "./shaders";
 
 type V3 = [number, number, number];
@@ -46,6 +46,7 @@ function createFireMaterial(): THREE.ShaderMaterial {
       uScale: { value: DEFAULT_PARAMS.radius },
       uMode: { value: 0 },
       uBounds: { value: new THREE.Vector3(1, 1, 1) },
+      uRingRadius: { value: 0.76 },
       uIntensity: { value: 1 },
       uTurb: { value: 0.7 },
       uFlame: { value: 1 },
@@ -320,7 +321,7 @@ function FireOrb({ p, active, anchorRef, fireScene, fireMat }: FireOrbProps) {
       l.position.copy(center);
       l.position.x += Math.sin(t * 3.1) * 0.012;
       l.position.z += Math.cos(t * 2.7) * 0.012;
-      l.intensity = 2.2 * q.light * f * q.intensity * u.uReveal.value;
+      l.intensity = 4.2 * q.light * f * q.intensity * u.uReveal.value;
       l.color.setHex(LIGHT_COLORS[q.palette] ?? 0xff4a14);
     }
   });
@@ -330,7 +331,7 @@ function FireOrb({ p, active, anchorRef, fireScene, fireMat }: FireOrbProps) {
       <pointLight
         ref={lightRef}
         color={0xff4a14}
-        intensity={2.2}
+        intensity={4.2}
         distance={12}
         decay={2}
         castShadow
@@ -358,17 +359,19 @@ function FireOrb({ p, active, anchorRef, fireScene, fireMat }: FireOrbProps) {
   );
 }
 
-function FireWall({
+function FireRing({
   p,
   fireScene,
   fireMat,
 }: {
-  p: FireWallParams;
+  p: FireRingParams;
   fireScene: THREE.Scene;
   fireMat: THREE.ShaderMaterial;
 }) {
   const boxRef = useRef<THREE.Mesh>(null);
-  const lightRef = useRef<THREE.PointLight>(null);
+  const frontLightRef = useRef<THREE.PointLight>(null);
+  const leftLightRef = useRef<THREE.PointLight>(null);
+  const rightLightRef = useRef<THREE.PointLight>(null);
   const time = useRef(0);
   const center = useMemo(() => new THREE.Vector3(), []);
   const bounds = useMemo(() => new THREE.Vector3(), []);
@@ -377,16 +380,17 @@ function FireWall({
 
   useFrame((state, dt) => {
     time.current += Math.min(dt, 0.05) * p.speed;
-    center.set(0, p.height / 2, -p.distance);
-    bounds.set(p.width / 2, p.height / 2, 0.42);
+    center.set(0, p.height / 2, 0);
+    const extent = p.radius + 0.38;
+    bounds.set(extent, p.height / 2, extent);
 
     const u = fireMat.uniforms;
-    u.uMode.value = 1;
+    u.uMode.value = 2;
     u.uTime.value = time.current;
     u.uReveal.value = THREE.MathUtils.damp(u.uReveal.value, p.enabled ? 1 : 0, 0.8, dt);
     u.uCenter.value.copy(center);
     u.uBounds.value.copy(bounds);
-    u.uScale.value = 0.42;
+    u.uScale.value = 0.9;
     u.uIntensity.value = p.intensity;
     u.uTurb.value = p.turbulence;
     u.uFlame.value = p.flameHeight;
@@ -396,6 +400,7 @@ function FireWall({
     u.uC2.value.copy(colors[1]);
     u.uC3.value.copy(colors[2]);
     u.uC4.value.copy(colors[3]);
+    u.uRingRadius.value = p.radius / extent;
     state.camera.getWorldDirection(forward);
     u.uCamForward.value.copy(forward);
     if (state.camera instanceof THREE.PerspectiveCamera) {
@@ -407,16 +412,23 @@ function FireWall({
       boxRef.current.position.copy(center);
       boxRef.current.scale.copy(bounds);
     }
-    if (lightRef.current) {
-      lightRef.current.position.set(0, p.height * 0.36, -p.distance + 0.25);
-      lightRef.current.intensity = p.enabled ? 0.28 * p.intensity * u.uReveal.value : 0;
-      lightRef.current.color.setHex(LIGHT_COLORS[p.palette] ?? 0xff7a22);
+    const glow = p.enabled ? 1.35 * p.intensity * u.uReveal.value : 0;
+    for (const light of [frontLightRef.current, leftLightRef.current, rightLightRef.current]) {
+      if (light) {
+        light.intensity = glow;
+        light.color.setHex(LIGHT_COLORS[p.palette] ?? 0xff7a22);
+      }
     }
+    frontLightRef.current?.position.set(0, p.height * 0.36, p.radius * 0.72);
+    leftLightRef.current?.position.set(-p.radius * 0.62, p.height * 0.32, p.radius * 0.32);
+    rightLightRef.current?.position.set(p.radius * 0.62, p.height * 0.32, p.radius * 0.32);
   });
 
   return (
     <>
-      <pointLight ref={lightRef} color="#ff7a22" distance={7} decay={2} />
+      <pointLight ref={frontLightRef} color="#ff7a22" distance={4.5} decay={2} />
+      <pointLight ref={leftLightRef} color="#ff7a22" distance={4} decay={2} />
+      <pointLight ref={rightLightRef} color="#ff7a22" distance={4} decay={2} />
       {createPortal(
         <mesh ref={boxRef} frustumCulled={false}>
           <boxGeometry args={[2, 2, 2]} />
@@ -686,12 +698,56 @@ function Model({
 /* ------------------------------------------------------------------ */
 
 function CameraFlight({ focusOnEyes, eyeAnchorRef }: { focusOnEyes: boolean; eyeAnchorRef: AnchorRef }) {
+  const { gl } = useThree();
   const currentTarget = useMemo(() => new THREE.Vector3(0.4, 1.3, 0.56), []);
   const desiredTarget = useMemo(() => new THREE.Vector3(), []);
   const desiredPosition = useMemo(() => new THREE.Vector3(), []);
   const homeTarget = useMemo(() => new THREE.Vector3(0.4, 1.3, 0.56), []);
   const homePosition = useMemo(() => new THREE.Vector3(0.95, 2.3, 4.5), []);
   const eyeOffset = useMemo(() => new THREE.Vector3(0, 0.12, 0.92), []);
+  const pan = useRef({ dragging: false, pointerId: -1, startX: 0, startY: 0, x: 0, y: 0 });
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      pan.current.dragging = true;
+      pan.current.pointerId = event.pointerId;
+      pan.current.startX = event.clientX;
+      pan.current.startY = event.clientY;
+      canvas.style.cursor = "grabbing";
+      canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+    const handleMove = (event: PointerEvent) => {
+      if (!pan.current.dragging || pan.current.pointerId !== event.pointerId) return;
+      const bounds = canvas.getBoundingClientRect();
+      pan.current.x = THREE.MathUtils.clamp(((event.clientX - pan.current.startX) / bounds.width) * 1.6, -0.3, 0.3);
+      pan.current.y = THREE.MathUtils.clamp(((event.clientY - pan.current.startY) / bounds.height) * -0.8, -0.14, 0.14);
+    };
+    const handleUp = (event: PointerEvent) => {
+      if (pan.current.pointerId !== event.pointerId) return;
+      pan.current.dragging = false;
+      pan.current.pointerId = -1;
+      canvas.style.cursor = "grab";
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    };
+
+    canvas.style.cursor = "grab";
+    canvas.style.touchAction = "none";
+    canvas.addEventListener("pointerdown", handleDown);
+    canvas.addEventListener("pointermove", handleMove);
+    canvas.addEventListener("pointerup", handleUp);
+    canvas.addEventListener("pointercancel", handleUp);
+    return () => {
+      canvas.removeEventListener("pointerdown", handleDown);
+      canvas.removeEventListener("pointermove", handleMove);
+      canvas.removeEventListener("pointerup", handleUp);
+      canvas.removeEventListener("pointercancel", handleUp);
+      canvas.style.cursor = "";
+      canvas.style.touchAction = "";
+    };
+  }, [gl]);
 
   useFrame(({ camera }, dt) => {
     if (focusOnEyes && eyeAnchorRef.current) {
@@ -701,7 +757,11 @@ function CameraFlight({ focusOnEyes, eyeAnchorRef }: { focusOnEyes: boolean; eye
       desiredTarget.copy(homeTarget);
       desiredPosition.copy(homePosition);
     }
-    const amount = 1 - Math.exp(-2.1 * dt);
+    desiredPosition.x -= pan.current.x;
+    desiredPosition.y += pan.current.y;
+    desiredTarget.x -= pan.current.x;
+    desiredTarget.y += pan.current.y;
+    const amount = 1 - Math.exp(-3.1 * dt);
     camera.position.lerp(desiredPosition, amount);
     currentTarget.lerp(desiredTarget, amount);
     camera.lookAt(currentTarget);
@@ -711,28 +771,28 @@ function CameraFlight({ focusOnEyes, eyeAnchorRef }: { focusOnEyes: boolean; eye
 
 function World({
   p,
-  wall,
+  ring,
   modelUrl,
   active,
   focusOnEyes,
 }: {
   p: FireOrbParams;
-  wall: FireWallParams;
+  ring: FireRingParams;
   modelUrl?: string;
   active: boolean;
   focusOnEyes: boolean;
 }) {
   const fireScene = useMemo(() => new THREE.Scene(), []);
   const fireMat = useMemo(() => createFireMaterial(), []);
-  const wallMat = useMemo(() => createFireMaterial(), []);
-  const fireMats = useMemo(() => [fireMat, wallMat], [fireMat, wallMat]);
+  const ringMat = useMemo(() => createFireMaterial(), []);
+  const fireMats = useMemo(() => [fireMat, ringMat], [fireMat, ringMat]);
   const anchorRef = useRef<THREE.Object3D | null>(null);
   const eyeAnchorRef = useRef<THREE.Object3D | null>(null);
 
   useEffect(() => () => {
     fireMat.dispose();
-    wallMat.dispose();
-  }, [fireMat, wallMat]);
+    ringMat.dispose();
+  }, [fireMat, ringMat]);
 
   return (
     <>
@@ -775,7 +835,7 @@ function World({
         fireScene={fireScene}
         fireMat={fireMat}
       />
-      <FireWall p={wall} fireScene={fireScene} fireMat={wallMat} />
+      <FireRing p={ring} fireScene={fireScene} fireMat={ringMat} />
       <PostFX
         fireScene={fireScene}
         fireMats={fireMats}
@@ -918,21 +978,20 @@ export default function FireOrbScene({
     },
   }) as FireOrbParams;
 
-  const wall = useControls("Стіна вогню", {
-    enabled: { value: DEFAULT_WALL_PARAMS.enabled, label: "увімкнути стіну" },
+  const ring = useControls("Вогняне коло", {
+    enabled: { value: DEFAULT_RING_PARAMS.enabled, label: "увімкнути коло" },
     palette: {
-      value: DEFAULT_WALL_PARAMS.palette,
+      value: DEFAULT_RING_PARAMS.palette,
       options: Object.keys(PALETTES),
-      label: "палітра стіни",
+      label: "палітра",
     },
-    width: { value: DEFAULT_WALL_PARAMS.width, min: 2, max: 8, step: 0.1, label: "ширина" },
-    height: { value: DEFAULT_WALL_PARAMS.height, min: 1.5, max: 6, step: 0.1, label: "висота" },
-    distance: { value: DEFAULT_WALL_PARAMS.distance, min: 0.6, max: 3.5, step: 0.05, label: "відстань за персонажем" },
-    intensity: { value: DEFAULT_WALL_PARAMS.intensity, min: 0, max: 2, step: 0.01, label: "яскравість" },
-    turbulence: { value: DEFAULT_WALL_PARAMS.turbulence, min: 0, max: 1.5, step: 0.01, label: "турбулентність" },
-    flameHeight: { value: DEFAULT_WALL_PARAMS.flameHeight, min: 0.3, max: 1.5, step: 0.01, label: "висота язиків" },
-    speed: { value: DEFAULT_WALL_PARAMS.speed, min: 0.1, max: 2.5, step: 0.01, label: "швидкість" },
-  }) as FireWallParams;
+    radius: { value: DEFAULT_RING_PARAMS.radius, min: 0.8, max: 2.4, step: 0.05, label: "радіус навколо персонажа" },
+    height: { value: DEFAULT_RING_PARAMS.height, min: 1.2, max: 3.5, step: 0.1, label: "висота об'єму" },
+    intensity: { value: DEFAULT_RING_PARAMS.intensity, min: 0, max: 2, step: 0.01, label: "яскравість" },
+    turbulence: { value: DEFAULT_RING_PARAMS.turbulence, min: 0, max: 1.5, step: 0.01, label: "турбулентність" },
+    flameHeight: { value: DEFAULT_RING_PARAMS.flameHeight, min: 0.3, max: 1.5, step: 0.01, label: "висота язиків" },
+    speed: { value: DEFAULT_RING_PARAMS.speed, min: 0.1, max: 2.5, step: 0.01, label: "швидкість" },
+  }) as FireRingParams;
 
   return (
     <div
@@ -963,7 +1022,7 @@ export default function FireOrbScene({
           modelUrl={modelUrl}
           active={active}
           focusOnEyes={focusOnEyes}
-          wall={wall}
+          ring={ring}
         />
       </Canvas>
     </div>

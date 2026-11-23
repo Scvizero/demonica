@@ -67,12 +67,11 @@ export interface FireOrbParams {
   sparkShape: "soft" | "diamond" | "streak";
 }
 
-export interface FireWallParams {
+export interface FireRingParams {
   enabled: boolean;
   palette: string;
-  width: number;
+  radius: number;
   height: number;
-  distance: number;
   intensity: number;
   turbulence: number;
   flameHeight: number;
@@ -91,21 +90,20 @@ export const DEFAULT_PARAMS: FireOrbParams = {
   speed: 1.0,
   bloom: 0.85,
   exposure: 1.0,
-  light: 1.0,
+  light: 1.25,
   sparks: true,
   sparkCount: 90,
   sparkSize: 1.0,
   sparkShape: "soft",
 };
 
-export const DEFAULT_WALL_PARAMS: FireWallParams = {
+export const DEFAULT_RING_PARAMS: FireRingParams = {
   enabled: true,
   palette: 'класичний помаранчевий',
-  width: 4.8,
-  height: 3.4,
-  distance: 1.45,
-  intensity: 0.7,
-  turbulence: 0.9,
-  flameHeight: 1.0,
+  radius: 1.45,
+  height: 2.25,
+  intensity: 0.9,
+  turbulence: 0.85,
+  flameHeight: 1.2,
   speed: 0.8,
 };

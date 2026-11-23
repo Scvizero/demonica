@@ -10,7 +10,7 @@ const FireOrbScene = dynamic(
 );
 
 export default function Home() {
-  const [awakened, setAwakened] = useState(false);
+  const [awakened, setAwakened] = useState(true);
   const [menuVisible, setMenuVisible] = useState(false);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [focusOnEyes, setFocusOnEyes] = useState(false);
@@ -53,7 +53,7 @@ export default function Home() {
         <nav className={styles.navigation} aria-label="Головна навігація">
           <button
             type="button"
-            onClick={() => setAwakened(true)}
+            onClick={() => setAwakened((active) => !active)}
             aria-pressed={awakened}
           >
             ПОЛУМ’Я <span>↗</span>
